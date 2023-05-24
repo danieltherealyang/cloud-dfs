@@ -1,0 +1,12 @@
+version: "3"
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 5432:1234
+    volumes:
+      - ./server:/app/server
+    command: nodemon --watch /app/server --ext py --exec python /app/server/server.py
+    tty: true
