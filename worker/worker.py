@@ -1,13 +1,7 @@
 import os
 import socket
 import struct
-import enum
-
-class RequestType(enum.Enum):
-    CREATE = 0x01
-    READ = 0x02
-    WRITE = 0x03
-    REMOVE = 0X04
+from constants import *
 
 class DFSServer:
     def __init__(self, host, port):
@@ -96,6 +90,6 @@ class DFSServer:
 
 if __name__ == "__main__":
     host = '0.0.0.0' # listen on all available interfaces
-    port = 1234
+    port = 1235
     server = DFSServer(host, port)
     server.start()

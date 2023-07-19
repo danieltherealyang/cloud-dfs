@@ -2,7 +2,7 @@ import socket
 import struct
 
 host = '127.0.0.1'  # Server IP address
-port = 5432 # Server port
+port = 1234 # Server port
 
 def encode_create_request(filename):
     operation_type = b'\x01'

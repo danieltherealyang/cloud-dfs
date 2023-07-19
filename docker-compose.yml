@@ -5,12 +5,12 @@ services:
       context: .
       dockerfile: Server.Dockerfile
     ports:
-      - 5432:1234
+      - 1234:1234
     volumes:
       - ./server:/app/server
     command: nodemon --watch /app/server --ext py --exec python /app/server/server.py
     tty: true
-  maindb:
+  mysql:
     image: mysql:latest
     restart: always
     environment:
@@ -19,7 +19,7 @@ services:
       MYSQL_USER: admin
       MYSQL_PASSWORD: password
     volumes:
-      - ./maindb/init/:/docker-entrypoint-initdb.d/
+      - ./mysql/init/:/docker-entrypoint-initdb.d/
     ports:
       - 3306:3306
     tty: true
