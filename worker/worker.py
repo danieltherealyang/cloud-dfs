@@ -1,6 +1,7 @@
 import os
 import socket
 import struct
+import sys
 import enum
 
 class RequestType(enum.Enum):
@@ -8,6 +9,7 @@ class RequestType(enum.Enum):
     READ = 0x02
     WRITE = 0x03
     REMOVE = 0X04
+    FAIL = 0x05
 
 class DFSServer:
     def __init__(self, host, port):
@@ -30,7 +32,8 @@ class DFSServer:
         file = open(filename, 'w')
         file.close()
         fh = os.path.abspath(filename)
-        return struct.pack("!1BI", 0x01, len(fh)) + fh.encode()
+        response = struct.pack("!BI", 0x01, len(fh)) + fh.encode()
+        return response
 
     def handle_read_request(self, fh, offset, count):
         with open(fh, 'r') as f:
@@ -51,7 +54,9 @@ class DFSServer:
     def handle_connection(self, conn):
         data = conn.recv(1024)
         print(f"Received data: {data}")
-
+        if not len(data):
+            conn.close()
+            return
         match data[0]:
             case RequestType.CREATE.value:  # CREATE request
             # Extract filename from request
@@ -96,6 +101,6 @@ class DFSServer:
 
 if __name__ == "__main__":
     host = '0.0.0.0' # listen on all available interfaces
-    port = 1234
+    port = int(sys.argv[1])
     server = DFSServer(host, port)
     server.start()

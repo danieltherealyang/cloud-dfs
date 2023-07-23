@@ -2,7 +2,7 @@ import socket
 import struct
 
 host = '127.0.0.1'  # Server IP address
-port = 5432 # Server port
+port = 1234 # Server port
 
 def encode_create_request(filename):
     operation_type = b'\x01'
@@ -55,9 +55,14 @@ def send_request(request):
 
 # Example usage:
 if __name__ == "__main__":
-    #notes: file handles should be in bytes
+    #notes: file handles should be in bytes not str
     create_request_data = encode_create_request('example.txt')
-    fh = b'/app/example.txt'
+    response = send_request(create_request_data)
+    print(response)
+    fh = b'example.txt'
     request_data = encode_read_request(fh, 0, 5)
+    response = send_request(request_data)
+    print(response)
+    request_data = encode_write_request(fh, 0, "Hello")
     response = send_request(request_data)
     print(response)
