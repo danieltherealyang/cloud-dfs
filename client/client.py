@@ -58,11 +58,11 @@ if __name__ == "__main__":
     #notes: file handles should be in bytes not str
     create_request_data = encode_create_request('example.txt')
     response = send_request(create_request_data)
-    print(response)
-    fh = b'example.txt'
-    request_data = encode_read_request(fh, 0, 5)
-    response = send_request(request_data)
-    print(response)
-    request_data = encode_write_request(fh, 0, "Hello")
-    response = send_request(request_data)
-    print(response)
+    # print(response)
+    # fh = b'example.txt'
+    # request_data = encode_read_request(fh, 0, 5)
+    # response = send_request(request_data)
+    # print(response)
+    # request_data = encode_write_request(fh, 0, "Hello")
+    # response = send_request(request_data)
+    # print(response)

@@ -2,8 +2,17 @@ import mysql.connector
 import socket
 import enum
 import random
-from typing import Dict
+from typing import Dict, List
 import struct
+import os
+import json
+import jsonschema
+
+def to_hex_string(byte_array: bytearray):
+    return ''.join(format(byte, '02x') for byte in byte_array)
+
+def generate_rand_bytes():
+    return os.urandom(3) + b'\x00'
 
 class RequestType(enum.Enum):
     CREATE = 0x01
@@ -55,6 +64,27 @@ class DBManager:
         except mysql.connector.Error as e:
             print("Could not get all mappings. Error " + str(e))
         return self.db_cursor.fetchall()
+    
+    def get_metanamefromfile(self, filename):
+        query = "SELECT * FROM file_to_metadata WHERE filename=%s"
+        try:
+            self.db_cursor.execute(query, (filename,))
+            response = self.db_cursor.fetchone()
+            if response != None:
+                return response[1]
+        except mysql.connector.Error as e:
+            print("Could not get metadata file. Error " + str(e))
+    
+    def insert_metamapping(self, filename, metadata) -> bool:
+        query = "INSERT INTO file_to_metadata (filename, metadata) VALUES (%s, %s)"
+        try:
+            self.db_cursor.execute(query, (filename, metadata))
+            self.db_conn.commit()
+        except mysql.connector.Error as e:
+            if isinstance(e, mysql.connector.IntegrityError):
+                print("Could not insert file mapping. Error " + str(e))
+            return False
+        return True
 
 class MessageBroker:
     socket_map: Dict[int, socket.socket] = {}
@@ -81,6 +111,83 @@ class MessageBroker:
             new_socket.connect(('localhost', port))
             self.socket_map[port] = new_socket
             return response
+
+metadata_default = {
+    "filename": None,
+    "num_chunks": 0,
+    "chunks": {}
+}
+metadata_schema = {
+    "type": "object",
+    "properties": {
+        "filename": {"type": "string"},
+        "num_chunks": {"type": "integer", "minimum": 0},
+        "chunks": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        }
+    },
+    "required": ["filename", "num_chunks", "chunks"]
+}
+
+class ChunkMapper:
+    # file->metadata filename from db
+    # metadata -> chunk names + nodes
+    db_manager: DBManager = None
+    def __init__(self, db_manager: DBManager):
+        self.db_manager = db_manager
+    def _metadata_format_valid(self, metadata) -> bool:
+        try:
+            jsonschema.validate(metadata, metadata_schema)
+            return True
+        except jsonschema.exceptions.ValidationError as e:
+            return False
+    def get_metadata(self, filename) -> List:
+        metaname = self.db_manager.get_metanamefromfile(filename)
+        if metaname == None:
+            return
+        metaname_str = to_hex_string(metaname)
+        metadata = None
+        with open(metaname_str, "r") as json_file:
+            metadata = json.load(json_file)
+            return [metadata, metaname]
+    def get_chunks(self, filename) -> Dict:
+        metadata, = self.get_metadata(filename)
+        if metadata == None:
+            return
+        return metadata['chunks']
+    # returns name of the new chunk in bytes
+    def insert_chunk(self, filename, node_id) -> bytearray:
+        metadata, metaname = self.get_metadata(filename)
+        if not self._metadata_format_valid(metadata):
+            return
+        metadata["num_chunks"] += 1
+        new_id = metadata["num_chunks"]
+        metadata["chunks"][new_id] = node_id
+        json_string = json.dumps(metadata)
+        metaname_str = to_hex_string(metaname)
+        with open(metaname_str, "w") as json_file:
+            json_file.write(json_string)
+        metaname[3] = new_id
+        return metaname
+
+    def create_metafile(self, filename) -> None:
+        metaname = self.db_manager.get_metanamefromfile(filename)
+        if metaname:
+            print(filename + " already has a metadata file mapping")
+            return
+        success = False
+        while not success:
+            metaname = generate_rand_bytes()
+            success = self.db_manager.insert_metamapping(filename, metaname)
+        metaname = to_hex_string(metaname)
+        data = metadata_schema
+        data["filename"] = filename
+        json_string = json.dumps(data)
+        with open(metaname, "w") as json_file:
+            json_file.write(json_string)
 
 class MessageReceiver:
     host = None
@@ -134,8 +241,12 @@ if __name__ == "__main__":
     host = "127.0.0.1"
     port = 1234
     db_manager = DBManager()
+    chunk_mapper = ChunkMapper(db_manager)
+    print(chunk_mapper.insert_chunk("Tst", "node"))
 
-    worker_ports = [1235, 1236, 1237]
-    msg_broker = MessageBroker(worker_ports)
-    msg_recv = MessageReceiver(host, port, msg_broker, db_manager)
-    msg_recv.start()
+    # worker_ports = [1235, 1236, 1237]
+    # # keeps a handle on all the worker ports and forwards msg back and forth
+    # msg_broker = MessageBroker(worker_ports)
+    # # receives messages from clients and handles them
+    # msg_recv = MessageReceiver(host, port, msg_broker, db_manager)
+    # msg_recv.start()
