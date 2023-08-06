@@ -7,7 +7,7 @@ port = 1234 # Server port
 def encode_create_request(filename):
     operation_type = b'\x01'
     filename_length = struct.pack('!B', len(filename))
-    filename_bytes = filename.encode('ascii')
+    filename_bytes = filename
 
     request = operation_type + filename_length + filename_bytes
     return request
@@ -56,13 +56,16 @@ def send_request(request):
 # Example usage:
 if __name__ == "__main__":
     #notes: file handles should be in bytes not str
-    create_request_data = encode_create_request('example.txt')
-    response = send_request(create_request_data)
+    fh = b'example.txt'
+    # create_request_data = encode_create_request(fh)
+    # response = send_request(create_request_data)
     # print(response)
-    # fh = b'example.txt'
-    # request_data = encode_read_request(fh, 0, 5)
+    request_data = encode_remove_request(fh)
+    response = send_request(request_data)
+    print(response)
+    # request_data = encode_read_request(fh, 0, 10)
     # response = send_request(request_data)
     # print(response)
-    # request_data = encode_write_request(fh, 0, "Hello")
+    # request_data = encode_write_request(fh, 3, "HelBoBelbo")
     # response = send_request(request_data)
     # print(response)

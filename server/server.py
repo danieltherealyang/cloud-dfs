@@ -8,11 +8,57 @@ import os
 import json
 import jsonschema
 
+chunk_limit = 5
+
 def to_hex_string(byte_array: bytearray):
     return ''.join(format(byte, '02x') for byte in byte_array)
 
 def generate_rand_bytes():
     return os.urandom(3) + b'\x00'
+
+def convert_dict_to_int(original_dict) -> Dict[int,int]:
+    new_dict = {}
+    for key, value in original_dict.items():
+        new_key = int(key)
+        new_value = int(value)
+        new_dict[new_key] = new_value
+    return new_dict
+
+def encode_create_request(filename: bytes):
+    operation_type = b'\x01'
+    filename_length = struct.pack('!B', len(filename))
+    filename_bytes = filename
+
+    request = operation_type + filename_length + filename_bytes
+    return request
+
+def encode_read_request(file_handle: bytes, offset: int, num_bytes: int):
+    operation_type = b'\x02'
+    file_handle_length = struct.pack('!B', len(file_handle))
+    file_handle_bytes = file_handle
+    offset_bytes = struct.pack('!Q', offset)
+    num_bytes_bytes = struct.pack('!I', num_bytes)
+
+    request = operation_type + file_handle_length + file_handle_bytes + offset_bytes + num_bytes_bytes
+    return request
+
+def encode_write_request(file_handle: bytes, offset: int, data: bytes):
+    operation_type = b'\x03'
+    file_handle_length = struct.pack('!B', len(file_handle))
+    file_handle_bytes = file_handle
+    offset_bytes = struct.pack('!Q', offset)
+    data_length = struct.pack('!B', len(data))
+    data_bytes = data
+    request = operation_type + file_handle_length + file_handle_bytes + offset_bytes + data_length + data_bytes
+    return request
+
+def encode_remove_request(file_handle: bytes):
+    operation_type = b'\x04'
+    filename_length = struct.pack('!B', len(file_handle))
+    filename_bytes = file_handle
+
+    request = operation_type + filename_length + filename_bytes
+    return request
 
 class RequestType(enum.Enum):
     CREATE = 0x01
@@ -65,7 +111,7 @@ class DBManager:
             print("Could not get all mappings. Error " + str(e))
         return self.db_cursor.fetchall()
     
-    def get_metanamefromfile(self, filename):
+    def get_metanamefromfile(self, filename) -> bytearray:
         query = "SELECT * FROM file_to_metadata WHERE filename=%s"
         try:
             self.db_cursor.execute(query, (filename,))
@@ -117,6 +163,7 @@ metadata_default = {
     "num_chunks": 0,
     "chunks": {}
 }
+
 metadata_schema = {
     "type": "object",
     "properties": {
@@ -125,7 +172,7 @@ metadata_schema = {
         "chunks": {
             "type": "object",
             "additionalProperties": {
-                "type": "string"
+                "type": "integer"
             }
         }
     },
@@ -150,14 +197,18 @@ class ChunkMapper:
             return
         metaname_str = to_hex_string(metaname)
         metadata = None
-        with open(metaname_str, "r") as json_file:
-            metadata = json.load(json_file)
+        try:
+            with open(metaname_str, "r") as json_file:
+                metadata = json.load(json_file)
             return [metadata, metaname]
+        except FileNotFoundError:
+            print(f"File {metaname_str} not found.")
+        return
     def get_chunks(self, filename) -> Dict:
-        metadata, = self.get_metadata(filename)
+        metadata, _ = self.get_metadata(filename)
         if metadata == None:
             return
-        return metadata['chunks']
+        return convert_dict_to_int(metadata['chunks'])
     # returns name of the new chunk in bytes
     def insert_chunk(self, filename, node_id) -> bytearray:
         metadata, metaname = self.get_metadata(filename)
@@ -183,11 +234,16 @@ class ChunkMapper:
             metaname = generate_rand_bytes()
             success = self.db_manager.insert_metamapping(filename, metaname)
         metaname = to_hex_string(metaname)
-        data = metadata_schema
+        data = metadata_default
         data["filename"] = filename
         json_string = json.dumps(data)
         with open(metaname, "w") as json_file:
             json_file.write(json_string)
+    def remove_metafile(self, metaname) -> None:
+        if not metaname:
+            print(metaname + " does not exist, nothing to remove")
+            return
+        os.remove(metaname)
 
 class MessageReceiver:
     host = None
@@ -195,9 +251,11 @@ class MessageReceiver:
     bind_socket: socket.socket = None
     msg_broker: MessageBroker = None
     db_manager: DBManager = None
-    def __init__(self, host, port, msg_broker: MessageBroker, db_manager: DBManager):
+    chunk_mapper: ChunkMapper = None
+    def __init__(self, host, port, msg_broker: MessageBroker, db_manager: DBManager, chunk_mapper: ChunkMapper):
         self.msg_broker = msg_broker
         self.db_manager = db_manager
+        self.chunk_mapper = chunk_mapper
         self.host = host
         self.port = port
         self.bind_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -212,6 +270,10 @@ class MessageReceiver:
             print(f"Connection established from {addr}")
             self.handle_connection(conn)
     
+    def select_worker(self):
+        worker_port = random.choice(list(self.msg_broker.socket_map.keys()))
+        return worker_port
+    
     def handle_connection(self, conn):
         data = conn.recv(1024)
         print(f"Received data: {data}")
@@ -220,21 +282,91 @@ class MessageReceiver:
         fh = data[2:2+fh_len].decode()
         worker_port = None
         response = struct.pack('B', RequestType.FAIL.value)
+        metaname = self.db_manager.get_metanamefromfile(fh)
         match req_type:
             case RequestType.CREATE.value:
-                worker_port = random.choice(list(self.msg_broker.socket_map.keys()))
+                # worker_port = self.select_worker()
                 worker_port = 1235
-                success = self.db_manager.insert_filemapping(fh, worker_port)
-                if not success:
-                    print("Could not insert filemapping into database.")
+                # success = self.db_manager.insert_filemapping(fh, worker_port)
+                # if not success:
+                #     print("Could not insert filemapping into database.")
+                #     conn.sendall(response)
+                #     return
+                # create metadata file, update to store node id, send msg.
+                if metaname != None:
+                    print(fh + " file already exists.")
                     conn.sendall(response)
                     return
-            case _:
-                worker_port = self.db_manager.get_nodefromfile(fh)
-                if worker_port == None:
+                self.chunk_mapper.create_metafile(fh)
+                response = struct.pack("!BI", 0x01, len(fh)) + fh.encode()
+            case RequestType.REMOVE.value:
+                if metaname == None:
+                    print(fh + " does not exist.")
                     conn.sendall(response)
                     return
-        response = self.msg_broker.send(worker_port, data)
+                chunks = self.chunk_mapper.get_chunks(fh)
+                for chunk_id in chunks.keys():
+                    chunk_name = bytes(to_hex_string(metaname[:3]+chunk_id.to_bytes(1)), "utf-8")
+                    request = encode_remove_request(chunk_name)
+                    # self.msg_broker.send(chunks[chunk_id], request)
+                self.chunk_mapper.remove_metafile(to_hex_string(metaname))
+                response = struct.pack("!BI", 0x04, 0x0)
+            case RequestType.READ.value:
+                if metaname == None:
+                    print(f"{fh} does not exist")
+                    conn.sendall(response)
+                    return
+                chunks = self.chunk_mapper.get_chunks(fh)
+                offset = struct.unpack("!Q", data[2+fh_len:2+fh_len+8])[0]
+                data_len = struct.unpack("!I", data[2+fh_len+8:2+fh_len+8+4])[0]
+                # input -> chunk nums, rel_offset, read_len -> send msg
+                data_read = b''
+                while data_len > 0:
+                    chunk_id = int(offset/chunk_limit)+1
+                    chunk_name = bytes(to_hex_string(metaname[:3] + chunk_id.to_bytes(1)), "utf-8")
+                    rel_offset = offset%5
+                    read_len = chunk_limit - rel_offset
+                    request_data = encode_read_request(chunk_name, rel_offset, read_len)
+                    response = self.msg_broker.send(chunks[chunk_id], request_data)
+                    data_read += response[5:]
+                    offset+=read_len
+                    data_len -= read_len
+                response = struct.pack("!BI", 0x02, len(data_read)) + data_read
+            case RequestType.WRITE.value:
+                if metaname == None:
+                    print(f"{fh} does not exist")
+                    conn.sendall(response)
+                    return
+                offset = struct.unpack("!Q", data[2+fh_len:2+fh_len+8])[0]
+                data_len = data[2+fh_len+8]
+                data = data[2+fh_len+9:2+fh_len+9+data_len]
+                metadata, metaname = self.chunk_mapper.get_metadata(fh)
+                chunks = self.chunk_mapper.get_chunks(fh)
+                num_chunks = metadata['num_chunks']
+                if offset > (num_chunks+1)*chunk_limit:
+                    print(f"Byte offset {offset} is out of range.")
+                    conn.sendall(response)
+                    return
+                while data_len > 0:
+                    chunk_id = int(offset/chunk_limit)+1
+                    if chunk_id not in chunks.keys():
+                        worker_port = self.select_worker()
+                        new_chunk_name = self.chunk_mapper.insert_chunk(fh, worker_port)
+                        new_chunk_name = bytes(to_hex_string(new_chunk_name), "utf-8")
+                        self.msg_broker.send(worker_port, encode_create_request(new_chunk_name))
+                        metadata, metaname = self.chunk_mapper.get_metadata(fh)
+                        chunks = self.chunk_mapper.get_chunks(fh)
+                        num_chunks = metadata['num_chunks']
+                    rel_offset = offset%5
+                    write_len = chunk_limit-rel_offset
+                    worker_port = chunks[chunk_id]
+                    chunk_name = to_hex_string(metaname[:3] + chunk_id.to_bytes(1))
+                    chunk_name_bytes = bytes(chunk_name, 'utf-8')
+                    self.msg_broker.send(worker_port, encode_write_request(chunk_name_bytes, rel_offset, data[:write_len]))
+                    offset += write_len
+                    data_len -= write_len
+                    data = data[write_len:]
+                response = struct.pack("!BI", 0x03, 0)
         conn.sendall(response)
 
 if __name__ == "__main__":
@@ -242,11 +374,9 @@ if __name__ == "__main__":
     port = 1234
     db_manager = DBManager()
     chunk_mapper = ChunkMapper(db_manager)
-    print(chunk_mapper.insert_chunk("Tst", "node"))
-
-    # worker_ports = [1235, 1236, 1237]
-    # # keeps a handle on all the worker ports and forwards msg back and forth
-    # msg_broker = MessageBroker(worker_ports)
-    # # receives messages from clients and handles them
-    # msg_recv = MessageReceiver(host, port, msg_broker, db_manager)
-    # msg_recv.start()
+    worker_ports = [1235, 1236, 1237]
+    # keeps a handle on all the worker ports and forwards msg back and forth
+    msg_broker = MessageBroker(worker_ports)
+    # receives messages from clients and handles them
+    msg_recv = MessageReceiver(host, port, msg_broker, db_manager, chunk_mapper)
+    msg_recv.start()
