@@ -7,6 +7,7 @@ import struct
 import os
 import json
 import jsonschema
+import time
 
 chunk_limit = 5
 
@@ -16,6 +17,8 @@ def to_hex_string(byte_array: bytearray):
 def generate_rand_bytes():
     return os.urandom(3) + b'\x00'
 
+def generate_lock_id():
+    return random.randint(0, (1<<32)-1)
 def convert_dict_to_int(original_dict) -> Dict[int,int]:
     new_dict = {}
     for key, value in original_dict.items():
@@ -131,6 +134,152 @@ class DBManager:
                 print("Could not insert file mapping. Error " + str(e))
             return False
         return True
+    
+    def rm_metafilefromfile(self, filename):
+        query = "DELETE FROM file_to_metadata WHERE filename=%s"
+        try:
+            self.db_cursor.execute(query, (filename,))
+            self.db_conn.commit()
+        except mysql.connector.Error as e:
+            print("Could not get metadata file. Error " + str(e))
+
+#keeps track of locks and manages who has the lock
+class LockService:
+    #shared data across all instances, acts as "server state" for later migration
+    lock_ids: set[int] = set()
+    file_map: Dict[str, int] = {}
+    id_map: Dict[int, str] = {}
+    
+    def register_client(self):
+        id: int = generate_lock_id()
+        while id in LockService.lock_ids:
+            id = generate_lock_id()
+        LockService.lock_ids.add(id)
+        return id
+    
+    def remove_client(self, id):
+        LockService.lock_ids.remove(id)
+        filename = LockService.id_map.pop(id, None)
+        if filename != None:
+            LockService.file_map.pop(filename)
+    
+    def request_lock(self, id, filename) -> bool:
+        if id not in LockService.lock_ids:
+            print(f"{id} not in lock_ids")
+            return False
+        if id in LockService.id_map.keys():
+            print(f"{id} already locking a file. Can only have on lock at a time")
+            return False
+        if filename in LockService.file_map.keys():
+            print(f"{filename} is already locked by another lock_id")
+            return False
+        LockService.id_map[id] = filename
+        LockService.file_map[filename] = id
+        return True
+    
+    def release_lock(self, id, filename) -> bool:
+        if id not in LockService.id_map.keys():
+            print(f"{id} has no resource associated.")
+            return False
+        if filename not in LockService.file_map.keys():
+            print(f"{filename} has no lock id associated.")
+            return False
+        LockService.id_map.pop(id)
+        LockService.file_map.pop(filename)
+        return True
+    
+    def locked(self, filename) -> bool:
+        return filename in LockService.file_map.keys()
+        
+class LockClient:
+    def __init__(self):
+        self.lock_service = LockService()
+        self.client_id = self.lock_service.register_client()
+    
+    def __del__(self):
+        self.lock_service.remove_client(self.client_id)
+    
+    def lock(self, filename, timeout=3, interval=1) -> bool:
+        while timeout>0:
+            success = self.lock_service.request_lock(self.client_id, filename)
+            if success:
+                return True
+            duration = min(timeout, interval)
+            timeout -= duration
+            time.sleep(duration)
+        return False
+    
+    def release(self, filename):
+        self.lock_service.release_lock(self.client_id, filename)
+
+#keeps track of locks and manages who has the lock
+class LockService:
+    #shared data across all instances, acts as "server state" for later migration
+    lock_ids: set[int] = set()
+    file_map: Dict[str, int] = {}
+    id_map: Dict[int, str] = {}
+    
+    def register_client(self):
+        id: int = generate_lock_id()
+        while id in LockService.lock_ids:
+            id = generate_lock_id()
+        LockService.lock_ids.add(id)
+        return id
+    
+    def remove_client(self, id):
+        LockService.lock_ids.remove(id)
+        filename = LockService.id_map.pop(id, None)
+        if filename != None:
+            LockService.file_map.pop(filename)
+    
+    def request_lock(self, id, filename) -> bool:
+        if id not in LockService.lock_ids:
+            print(f"{id} not in lock_ids")
+            return False
+        if id in LockService.id_map.keys():
+            print(f"{id} already locking a file. Can only have on lock at a time")
+            return False
+        if filename in LockService.file_map.keys():
+            print(f"{filename} is already locked by another lock_id")
+            return False
+        LockService.id_map[id] = filename
+        LockService.file_map[filename] = id
+        return True
+    
+    def release_lock(self, id, filename) -> bool:
+        if id not in LockService.id_map.keys():
+            print(f"{id} has no resource associated.")
+            return False
+        if filename not in LockService.file_map.keys():
+            print(f"{filename} has no lock id associated.")
+            return False
+        LockService.id_map.pop(id)
+        LockService.file_map.pop(filename)
+        return True
+    
+    def locked(self, filename) -> bool:
+        return filename in LockService.file_map.keys()
+        
+class LockClient:
+    def __init__(self):
+        self.lock_service = LockService()
+        self.client_id = self.lock_service.register_client()
+    
+    def __del__(self):
+        self.lock_service.remove_client(self.client_id)
+    
+    def lock(self, filename, timeout=3, interval=1) -> bool:
+        while timeout>0:
+            success = self.lock_service.request_lock(self.client_id, filename)
+            if success:
+                return True
+            duration = min(timeout, interval)
+            timeout -= duration
+            time.sleep(duration)
+        return False
+    
+    def release(self, filename):
+        self.lock_service.release_lock(self.client_id, filename)
 
 class MessageBroker:
     socket_map: Dict[int, socket.socket] = {}
@@ -306,10 +455,11 @@ class MessageReceiver:
                     return
                 chunks = self.chunk_mapper.get_chunks(fh)
                 for chunk_id in chunks.keys():
-                    chunk_name = bytes(to_hex_string(metaname[:3]+chunk_id.to_bytes(1)), "utf-8")
+                    chunk_name = bytes(to_hex_string(metaname[:3]+chunk_id.to_bytes(1, 'big')), "utf-8")
                     request = encode_remove_request(chunk_name)
-                    # self.msg_broker.send(chunks[chunk_id], request)
+                    self.msg_broker.send(chunks[chunk_id], request)
                 self.chunk_mapper.remove_metafile(to_hex_string(metaname))
+                self.db_manager.rm_metafilefromfile(fh)
                 response = struct.pack("!BI", 0x04, 0x0)
             case RequestType.READ.value:
                 if metaname == None:
@@ -323,7 +473,7 @@ class MessageReceiver:
                 data_read = b''
                 while data_len > 0:
                     chunk_id = int(offset/chunk_limit)+1
-                    chunk_name = bytes(to_hex_string(metaname[:3] + chunk_id.to_bytes(1)), "utf-8")
+                    chunk_name = bytes(to_hex_string(metaname[:3] + chunk_id.to_bytes(1, 'big')), "utf-8")
                     rel_offset = offset%5
                     read_len = chunk_limit - rel_offset
                     request_data = encode_read_request(chunk_name, rel_offset, read_len)
@@ -360,7 +510,7 @@ class MessageReceiver:
                     rel_offset = offset%5
                     write_len = chunk_limit-rel_offset
                     worker_port = chunks[chunk_id]
-                    chunk_name = to_hex_string(metaname[:3] + chunk_id.to_bytes(1))
+                    chunk_name = to_hex_string(metaname[:3] + chunk_id.to_bytes(1, 'big'))
                     chunk_name_bytes = bytes(chunk_name, 'utf-8')
                     self.msg_broker.send(worker_port, encode_write_request(chunk_name_bytes, rel_offset, data[:write_len]))
                     offset += write_len
