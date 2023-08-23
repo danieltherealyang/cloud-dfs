@@ -41,6 +41,21 @@ def encode_remove_request(file_handle):
     request = operation_type + filename_length + filename_bytes
     return request
 
+def encode_commit_request(file_handle):
+    operation_type = b'\x06'
+    file_handle_length = struct.pack('!B', len(file_handle))
+    file_handle_bytes = file_handle
+    request = operation_type + file_handle_length + file_handle_bytes
+    return request
+
+
+def encode_revert_request(file_handle):
+    operation_type = b'\x07'
+    file_handle_length = struct.pack('!B', len(file_handle))
+    file_handle_bytes = file_handle
+    request = operation_type + file_handle_length + file_handle_bytes
+    return request
+
 def send_request(request):
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
@@ -57,15 +72,21 @@ def send_request(request):
 if __name__ == "__main__":
     #notes: file handles should be in bytes not str
     fh = b'example.txt'
-    create_request_data = encode_create_request(fh)
-    response = send_request(create_request_data)
-    print(response)
-    request_data = encode_write_request(fh, 0, "HelBoBelbo")
-    response = send_request(request_data)
-    print(response)
-    request_data = encode_read_request(fh, 0, 10)
-    response = send_request(request_data)
-    print(response)
+    # create_request_data = encode_create_request(fh)
+    # response = send_request(create_request_data)
+    # print(response)
+    # request_data = encode_write_request(fh, 0, "BIBLibobli")
+    # response = send_request(request_data)
+    # print(response)
+    # request_data = encode_read_request(fh, 0, 10)
+    # response = send_request(request_data)
+    # print(response)
+    # commit_request_data = encode_commit_request(fh)
+    # response = send_request(commit_request_data)
+    # print(response)
+    # revert_request_data = encode_revert_request(fh)
+    # response = send_request(revert_request_data)
+    # print(response)
     request_data = encode_remove_request(fh)
     response = send_request(request_data)
     print(response)

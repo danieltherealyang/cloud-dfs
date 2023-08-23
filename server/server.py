@@ -63,12 +63,29 @@ def encode_remove_request(file_handle: bytes):
     request = operation_type + filename_length + filename_bytes
     return request
 
+def encode_commit_request(file_handle):
+    operation_type = b'\x06'
+    file_handle_length = struct.pack('!B', len(file_handle))
+    file_handle_bytes = file_handle
+    request = operation_type + file_handle_length + file_handle_bytes
+    return request
+
+
+def encode_revert_request(file_handle):
+    operation_type = b'\x07'
+    file_handle_length = struct.pack('!B', len(file_handle))
+    file_handle_bytes = file_handle
+    request = operation_type + file_handle_length + file_handle_bytes
+    return request
+
 class RequestType(enum.Enum):
     CREATE = 0x01
     READ = 0x02
     WRITE = 0x03
     REMOVE = 0X04
     FAIL = 0x05
+    COMMIT = 0X06
+    REVERT = 0x07
 
 class DBManager:
     db_conn = None
@@ -388,11 +405,14 @@ class ChunkMapper:
         json_string = json.dumps(data)
         with open(metaname, "w") as json_file:
             json_file.write(json_string)
+        file = open(metaname+"_fin", 'w')
+        file.close()
     def remove_metafile(self, metaname) -> None:
         if not metaname:
             print(metaname + " does not exist, nothing to remove")
             return
         os.remove(metaname)
+        os.remove(metaname+"_fin")
 
 class MessageReceiver:
     host = None
@@ -517,6 +537,46 @@ class MessageReceiver:
                     data_len -= write_len
                     data = data[write_len:]
                 response = struct.pack("!BI", 0x03, 0)
+            case RequestType.COMMIT.value:
+                if metaname == None:
+                    print(f"{fh} does not exist")
+                    conn.sendall(response)
+                    return
+                chunks = self.chunk_mapper.get_chunks(fh)
+                metadata_file = to_hex_string(metaname)
+                # revert metadata file
+                with open(metadata_file, 'r') as source_file, open(metadata_file+"_fin", 'w') as destination_file:
+                    # Read the content from the source file
+                    content = source_file.read()
+                    
+                    # Write the content to the destination file
+                    destination_file.write(content)
+                # commit metadata and workers
+                for chunk_id in chunks.keys():
+                    chunk_name = bytes(to_hex_string(metaname[:3] + chunk_id.to_bytes(1, 'big')), "utf-8")
+                    request_data = encode_commit_request(chunk_name)
+                    response = self.msg_broker.send(chunks[chunk_id], request_data)
+                response = struct.pack("!BI", 0x06, 0)
+            case RequestType.REVERT.value:
+                if metaname == None:
+                    print(f"{fh} does not exist")
+                    conn.sendall(response)
+                    return
+                chunks = self.chunk_mapper.get_chunks(fh)
+                metadata_file = to_hex_string(metaname)
+                # revert metadata file
+                with open(metadata_file+"_fin", 'r') as source_file, open(metadata_file, 'w') as destination_file:
+                    # Read the content from the source file
+                    content = source_file.read()
+                    
+                    # Write the content to the destination file
+                    destination_file.write(content)
+                # commit metadata and workers
+                for chunk_id in chunks.keys():
+                    chunk_name = bytes(to_hex_string(metaname[:3] + chunk_id.to_bytes(1, 'big')), "utf-8")
+                    request_data = encode_revert_request(chunk_name)
+                    response = self.msg_broker.send(chunks[chunk_id], request_data)
+                response = struct.pack("!BI", 0x07, 0)
         conn.sendall(response)
 
 if __name__ == "__main__":

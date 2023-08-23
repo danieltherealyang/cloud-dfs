@@ -10,6 +10,8 @@ class RequestType(enum.Enum):
     WRITE = 0x03
     REMOVE = 0X04
     FAIL = 0x05
+    COMMIT = 0X06
+    REVERT = 0x07
 
 class DFSServer:
     def __init__(self, host, port):
@@ -31,6 +33,8 @@ class DFSServer:
     def handle_create_request(self, filename):
         file = open(filename, 'w')
         file.close()
+        file = open(filename+"_fin", 'w')
+        file.close()
         fh = os.path.abspath(filename)
         response = struct.pack("!BI", 0x01, len(fh)) + fh.encode()
         return response
@@ -49,7 +53,26 @@ class DFSServer:
     
     def handle_remove_request(self, filename):
         os.remove(filename)
+        os.remove(filename+"_fin")
         return struct.pack("!BI", 0x04, 0)
+    
+    def handle_commit_request(self, filename):
+        with open(filename, 'r') as source_file, open(filename+"_fin", 'w') as destination_file:
+            # Read the content from the source file
+            content = source_file.read()
+            
+            # Write the content to the destination file
+            destination_file.write(content)
+        return struct.pack("!BI", 0x06, 0)
+    
+    def handle_revert_request(self, filename):
+        with open(filename+"_fin", 'r') as source_file, open(filename, 'w') as destination_file:
+            # Read the content from the source file
+            content = source_file.read()
+            
+            # Write the content to the destination file
+            destination_file.write(content)
+        return struct.pack("!BI", 0x07, 0)
 
     def handle_connection(self, conn):
         data = conn.recv(1024)
@@ -80,7 +103,6 @@ class DFSServer:
                 # Extract file handle, offset, and data from request
                 fh_len = data[1]
                 fh = data[2:2+fh_len].decode('utf-8')
-                print(fh)
                 offset = struct.unpack("!Q", data[2+fh_len:2+fh_len+8])[0]
                 data_len = data[2+fh_len+8]
                 data = data[2+fh_len+9:2+fh_len+9+data_len].decode()
@@ -96,7 +118,18 @@ class DFSServer:
                 # Remove file and send status code back to client
                 response = self.handle_remove_request(filename)
                 conn.sendall(response)
+            case RequestType.COMMIT.value: # COMMIT request
+                fh_len = data[1]
+                fh = data[2:2+fh_len].decode()
 
+                response = self.handle_commit_request(fh)
+                conn.sendall(response)
+            case RequestType.REVERT.value:
+                fh_len = data[1]
+                fh = data[2:2+fh_len].decode()
+
+                response = self.handle_revert_request(fh)
+                conn.sendall(response)
         conn.close()
 
 if __name__ == "__main__":
